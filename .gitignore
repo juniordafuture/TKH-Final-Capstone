@@ -1,0 +1,13 @@
+# Terraform state - can contain secrets. Never commit.
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+
+# Variable files with real values (your home IP)
+*.tfvars
+!*.tfvars.example
+
+# Editor / OS
+.vscode/
+.DS_Store
