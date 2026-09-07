@@ -21,12 +21,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      # The quality gate. soft_fail is false, so any unsuppressed finding
-      # fails the job and the build physically breaks.
+      # The quality gate.
+      #
+      # soft_fail is deliberately NOT passed. The action's entrypoint tests it
+      # with [ -n "$INPUT_SOFT_FAIL" ], which is true for ANY non-empty value -
+      # including the literal string "false". Passing soft_fail: false silently
+      # ENABLES soft-fail and turns this gate into a rubber stamp. Omitting the
+      # input is the only way to make tfsec's non-zero exit break the build.
       - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.0
-        with:
-          soft_fail: false
 
       # Inline PR comments. Only meaningful on pull_request events - there is
       # no PR to comment on during a push, so this step is skipped there.
