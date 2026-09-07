@@ -1,0 +1,38 @@
+name: DevSecOps Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  tfsec_scan:
+    name: Terraform SAST Scanner
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # The quality gate. soft_fail is false, so any unsuppressed finding
+      # fails the job and the build physically breaks.
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          soft_fail: false
+
+      # Inline PR comments. Only meaningful on pull_request events - there is
+      # no PR to comment on during a push, so this step is skipped there.
+      - name: Run tfsec PR commenter
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/tfsec-pr-commenter-action@v1.2.0
+        with:
+          tfsec_args: --soft-fail=false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
