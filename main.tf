@@ -129,7 +129,7 @@ resource "aws_security_group" "web" {
   # tfsec AVD-AWS-0104 is an accepted risk. The bootstrap script must reach the
   # Amazon Linux package repositories, whose address space is not a fixed CIDR
   # that can be enumerated in this security group.
-  # TEMPORARILY DISABLED - proving the quality gate breaks the build
+  #tfsec:ignore:aws-vpc-no-public-egress-sgr
   egress {
     description = "Allow all outbound (needed for yum package installs)"
     from_port   = 0
