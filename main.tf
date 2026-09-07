@@ -50,6 +50,11 @@ resource "aws_vpc" "main" {
 }
 
 # Public subnet (10.0.1.0/24) - where the web server lives.
+# tfsec AVD-AWS-0164 is an accepted risk, not a defect. This subnet exists to
+# host an internet-facing web server, so a routable public IP is the
+# requirement. The compensating control is the security group below, which
+# exposes only :80 to the world and restricts :22 to a single /32.
+#tfsec:ignore:aws-ec2-no-public-ip-subnet
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidr
@@ -101,6 +106,10 @@ resource "aws_security_group" "web" {
   description = "Allow HTTP from anywhere and SSH from my home IP only"
   vpc_id      = aws_vpc.main.id
 
+  # tfsec AVD-AWS-0107 is an accepted risk. A public web server must accept
+  # traffic from the public internet on :80. The exposure is bounded: only :80
+  # is open to 0.0.0.0/0, and :22 is limited to one address.
+  #tfsec:ignore:aws-ec2-no-public-ingress-sgr
   ingress {
     description = "HTTP from the public internet"
     from_port   = 80
@@ -117,6 +126,10 @@ resource "aws_security_group" "web" {
     cidr_blocks = [var.my_home_ip]
   }
 
+  # tfsec AVD-AWS-0104 is an accepted risk. The bootstrap script must reach the
+  # Amazon Linux package repositories, whose address space is not a fixed CIDR
+  # that can be enumerated in this security group.
+  #tfsec:ignore:aws-vpc-no-public-egress-sgr
   egress {
     description = "Allow all outbound (needed for yum package installs)"
     from_port   = 0
@@ -164,5 +177,132 @@ resource "aws_instance" "web" {
 
   tags = {
     Name = "${var.project_name}-web-server"
+  }
+}
+
+
+###############################################################################
+# VPC FLOW LOGS
+#
+# The one tfsec finding that was a genuine gap rather than an accepted risk
+# (AVD-AWS-0178). Without flow logs there is no record of traffic in or out of
+# the VPC, so a security incident cannot be reconstructed after the fact.
+###############################################################################
+
+data "aws_caller_identity" "current" {}
+
+# Customer-managed KMS key for the log group. A CMK rather than the default
+# AWS-owned key means rotation and access are auditable and controlled by this
+# account - AVD-AWS-0017.
+resource "aws_kms_key" "flow_logs" {
+  description             = "Encrypts VPC flow logs for ${var.project_name}"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.flow_logs_kms.json
+
+  tags = {
+    Name = "${var.project_name}-flow-logs-key"
+  }
+}
+
+data "aws_iam_policy_document" "flow_logs_kms" {
+  # Account root retains administrative control of the key.
+  statement {
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+  }
+
+  # CloudWatch Logs must be able to encrypt and decrypt log data with this key.
+  statement {
+    effect = "Allow"
+
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey",
+    ]
+
+    resources = ["*"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  name              = "/aws/vpc/${var.project_name}-flow-logs"
+  retention_in_days = var.flow_log_retention_days
+  kms_key_id        = aws_kms_key.flow_logs.arn
+
+  tags = {
+    Name = "${var.project_name}-flow-logs"
+  }
+}
+
+# Trust policy - lets the VPC Flow Logs service assume this role.
+data "aws_iam_policy_document" "flow_logs_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["vpc-flow-logs.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "flow_logs_permissions" {
+  statement {
+    effect = "Allow"
+
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+
+    # tfsec AVD-AWS-0057 is an accepted risk. The ":*" suffix is the log-stream
+    # wildcard AWS documents for this role - flow logs create one stream per
+    # ENI, so streams cannot be enumerated ahead of time. The policy is still
+    # scoped to this single log group and never to "*".
+    #tfsec:ignore:aws-iam-no-policy-wildcards
+    resources = ["${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"]
+  }
+}
+
+resource "aws_iam_role" "flow_logs" {
+  name               = "${var.project_name}-flow-logs-role"
+  assume_role_policy = data.aws_iam_policy_document.flow_logs_assume_role.json
+
+  tags = {
+    Name = "${var.project_name}-flow-logs-role"
+  }
+}
+
+resource "aws_iam_role_policy" "flow_logs" {
+  name   = "${var.project_name}-flow-logs-policy"
+  role   = aws_iam_role.flow_logs.id
+  policy = data.aws_iam_policy_document.flow_logs_permissions.json
+}
+
+resource "aws_flow_log" "main" {
+  vpc_id          = aws_vpc.main.id
+  traffic_type    = "ALL"
+  iam_role_arn    = aws_iam_role.flow_logs.arn
+  log_destination = aws_cloudwatch_log_group.vpc_flow_logs.arn
+
+  tags = {
+    Name = "${var.project_name}-flow-log"
   }
 }

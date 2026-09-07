@@ -45,3 +45,9 @@ variable "my_home_ip" {
     error_message = "my_home_ip must be a single address in CIDR form ending in /32."
   }
 }
+
+variable "flow_log_retention_days" {
+  description = "How long to retain VPC flow logs in CloudWatch."
+  type        = number
+  default     = 90
+}
